@@ -7,7 +7,7 @@ if [ -z "${BASH_VERSION:-}" ]; then
 fi
 set -uo pipefail
 
-### DEFAULTS - EDIT BEFORE HOSTING ###
+### USER CUSTOMIZATION SECTION ###
 HOSTNAME_VAL="void"
 LOCALE_LINE="en_US.UTF-8 UTF-8"
 LANG_VAL="en_US.UTF-8"
@@ -53,8 +53,6 @@ die() {
   cleanup_and_exit 1
 }
 
-# dialog draws to stdout and writes the answer to stderr - stdout is pinned
-# to /dev/tty so a caller like VAR=$(get_password ...) doesn't swallow the UI.
 ask() { dialog "$@" 1>/dev/tty 2>"$WORKDIR/ans"; }
 
 ### PROGRESS DISPLAY (BOX-DRAWN, NO PERCENTAGE GAUGE) ###
@@ -66,8 +64,6 @@ PROGRESS_BOX_LINES=6
 SPINNER_FRAMES=(⠋ ⠙ ⠹ ⠸ ⠼ ⠴ ⠦ ⠧ ⠇ ⠏)
 SPINNER_IDX=0
 
-# Colors/cursor control only enabled on a real, capable terminal, so nothing
-# leaks into $LOG on a redirected/non-interactive run.
 if [ -t 1 ] && command -v tput >/dev/null 2>&1 && [ "$(tput colors 2>/dev/null || echo 0)" -ge 8 ]; then
   TUI_LIVE=1
   # xterm-256 color 65 approximates Void's brand green (Viridian, #478061);
@@ -92,8 +88,6 @@ term_width() {
   printf '%s' "$w"
 }
 
-# Box width proportional to the terminal, capped at 78 cols and floored at 36
-# so header text always fits; progress_paint() centers it within term_width().
 box_width() {
   local w target; w=$(term_width)
   target=$((w - 4))
@@ -110,17 +104,12 @@ fmt_elapsed() {
   fi
 }
 
-# Repeats a (possibly multi-byte UTF-8) character "$1" "$2" times. A plain
-# bash loop, not tr/substring: those are byte-wise and can split a box-drawing char.
 repeat_char() {
   local ch="$1" n="$2" out="" i
   for ((i = 0; i < n; i++)); do out+="$ch"; done
   printf '%s' "$out"
 }
 
-# Paints the boxed status display (spinner, part label, elapsed time, latest
-# log line), padded to exact width so a shorter repaint leaves no stray text.
-# Repainted in place by run_part().
 progress_paint() {
   local msg="$1" elapsed="$2" activity="$3" style="${4:-}"
   local width; width=$(box_width)
@@ -173,7 +162,7 @@ progress_paint() {
 run_part() {
   local msg="$1"; shift
   CURRENT_PART=$((CURRENT_PART + 1))
-  # stdin closed so an unexpected prompt fails fast (EOF) instead of hanging invisibly.
+
   ( "$@" ) >>"$LOG" 2>&1 </dev/null &
   local pid=$! start_ts=$SECONDS elapsed=0 line rc
 
@@ -185,7 +174,7 @@ run_part() {
     sleep 0.4
     elapsed=$((SECONDS - start_ts))
     SPINNER_IDX=$((SPINNER_IDX + 1))
-    # Surfaces the last non-blank line of $LOG as "still working" activity text.
+
     line=$(tail -c 500 "$LOG" 2>/dev/null | tr '\r' '\n' \
              | sed -n '/[^[:space:]]/{s/^[[:space:]]*//;p}' | tail -n 1)
     [ -n "$line" ] || line="Working..."
@@ -193,7 +182,6 @@ run_part() {
     progress_paint "$msg" "$elapsed" "$line"
   done
 
-  # Resolved before the final paint so a failure never flashes a false "Done."
   elapsed=$((SECONDS - start_ts))
   wait "$pid"
   rc=$?
@@ -234,8 +222,6 @@ bootstrap_xbps() {
   command -v xbps-install >/dev/null 2>&1 || { echo "ERROR: static xbps bootstrap failed." >&2; exit 1; }
 }
 
-# Prints response time in seconds for an https URL (non-2xx counts as
-# failure); tries curl first, falls back to wget --spider.
 time_url() {
   local url="$1" out code t
   if command -v curl >/dev/null 2>&1; then
@@ -257,8 +243,6 @@ time_url() {
   fi
 }
 
-# Prints measured transfer rate in bytes/sec for a URL, capped at
-# MIRROR_RATE_SECS; latency alone (time_url above) doesn't predict throughput.
 rate_url() {
   local url="$1" tmp start end bytes
   tmp=$(mktemp)
@@ -369,10 +353,6 @@ detect_gpu() {
   fi
 }
 
-# Reads vconsole.keymap/locale.LANG from /proc/cmdline (set by void-mklive at
-# boot). KEYMAP_VAL is only applied once confirmed to name a real keymap
-# under /usr/share/kbd/keymaps; LANG_VAL/LOCALE_LINE skip that check since
-# xbps-reconfigure glibc-locales no-ops on an unrecognized locale.
 detect_locale_keymap() {
   [ -r /proc/cmdline ] || return 0
   local -a args=()
@@ -394,8 +374,6 @@ detect_locale_keymap() {
   fi
 }
 
-# Dark theme accented in Void's brand green so the dialog wizard matches the
-# run_part() progress boxes; shadow off since it just looks like a smudge on black.
 setup_theme() {
   cat > "$WORKDIR/dialogrc" <<'EOF'
 use_shadow = OFF
@@ -431,8 +409,6 @@ EOF
   export DIALOGRC="$WORKDIR/dialogrc"
 }
 
-# Clears dialog's last screen (it never clears on its own) and optionally
-# holds a message before the caller paints next; no-op unless TUI_LIVE=1.
 transition_screen() {
   local msg="${1:-}"
   [ "$TUI_LIVE" = "1" ] || return 0
@@ -677,9 +653,6 @@ echo "$HOSTNAME_VAL" > /etc/hostname
 echo "KEYMAP=$KEYMAP_VAL" >> /etc/rc.conf
 ln -sf "/usr/share/zoneinfo/$TZ_VAL" /etc/localtime
 
-# rc.conf's KEYMAP only covers the virtual console, not Xorg (Void has no
-# systemd/localectl bridge) - set XkbLayout explicitly or every greeter falls
-# back to "us", making a correctly typed password look wrong at login.
 mkdir -p /etc/X11/xorg.conf.d
 cat > /etc/X11/xorg.conf.d/00-keyboard.conf <<XKBCONF
 Section "InputClass"
@@ -693,9 +666,6 @@ echo "$LOCALE_LINE" >> /etc/default/libc-locales
 echo "LANG=$LANG_VAL" > /etc/locale.conf
 xbps-reconfigure -f glibc-locales
 
-# Fixes chpasswd silently no-op'ing: Void ships /etc/pam.d/chpasswd as a copy
-# of chage's (pam_permit.so), so no password from setup ever gets written -
-# repoint it at pam_unix.so, same as /etc/pam.d/passwd.
 sed -i 's/^password.*pam_permit\.so/password\trequired\tpam_unix.so sha512 shadow nullok/' /etc/pam.d/chpasswd
 
 printf 'root:%s\n' "$ROOTPASS" | chpasswd
@@ -707,18 +677,10 @@ echo "%wheel ALL=(ALL:ALL) ALL" > /etc/sudoers.d/wheel
 chmod 0440 /etc/sudoers.d/wheel
 
 mkdir -p /etc/runit/runsvdir/default
-# Enabled straight into runsvdir/default, not /var/service - this chroot targets an unbooted system.
 ln -sf /etc/sv/dbus /etc/runit/runsvdir/default/
-# Enabled outright: Void's default D-Bus-activation-on-demand can race the
-# greeter's PAM session phase and produce a generic "Login failed".
 ln -sf /etc/sv/elogind /etc/runit/runsvdir/default/
 ln -sf /etc/sv/NetworkManager /etc/runit/runsvdir/default/
 
-# pipewire ships binaries + wireplumber as a dependency, but nothing starts
-# it. Starting it from rc.local (before any session exists) orphans its
-# sockets when elogind remounts /run/user/$UID at first login - use XDG
-# Desktop Autostart instead so it starts inside the session. USER_GROUPS
-# already grants /dev/snd access via "audio".
 mkdir -p /etc/xdg/autostart
 for f in pipewire pipewire-pulse wireplumber; do
   ln -sf "/usr/share/applications/$f.desktop" /etc/xdg/autostart/
