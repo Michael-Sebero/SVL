@@ -610,7 +610,7 @@ build_pkg_list() {
   PKGS+=(xorg-minimal xorg-fonts xterm)
   # Installed unconditionally, for every DE. Pulls in wireplumber as a
   # dependency but still needs an autostart entry to launch (see write_chroot_script).
-  PKGS+=(pipewire)
+  PKGS+=(pipewire wget git)
   case "$FS_CHOICE" in
     f2fs)  PKGS+=(f2fs-tools) ;;
     xfs)   PKGS+=(xfsprogs) ;;
