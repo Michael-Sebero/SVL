@@ -22,6 +22,7 @@ USER_GROUPS="wheel,users,audio,video,input,storage,optical,cdrom,network,kvm,plu
 LOG="/var/tmp/void-install.log"
 MIRROR_RATE_CANDIDATES=3
 MIRROR_RATE_SECS=4
+EXTRA_PACKAGES=(pipewire wget git)
 
 BACKTITLE="Simple Void Linux"
 HAVE_DIALOG=0
@@ -584,9 +585,7 @@ build_pkg_list() {
     *)      PKGS+=(mesa-dri) ;;
   esac
   PKGS+=(xorg-minimal xorg-fonts xterm)
-  # Installed unconditionally, for every DE. Pulls in wireplumber as a
-  # dependency but still needs an autostart entry to launch (see write_chroot_script).
-  PKGS+=(pipewire wget git)
+  PKGS+=("${EXTRA_PACKAGES[@]}")
   case "$FS_CHOICE" in
     f2fs)  PKGS+=(f2fs-tools) ;;
     xfs)   PKGS+=(xfsprogs) ;;
