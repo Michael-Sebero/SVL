@@ -22,7 +22,7 @@ USER_GROUPS="wheel,users,audio,video,input,storage,optical,cdrom,network,kvm,plu
 LOG="/var/tmp/void-install.log"
 MIRROR_RATE_CANDIDATES=3
 MIRROR_RATE_SECS=4
-EXTRA_PACKAGES=(pipewire wget git)
+EXTRA_PACKAGES=(pipewire wget)
 
 BACKTITLE="Simple Void Linux"
 HAVE_DIALOG=0
