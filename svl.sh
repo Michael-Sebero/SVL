@@ -199,7 +199,6 @@ run_part() {
 }
 
 ### PREFLIGHT (PLAIN TERMINAL, DIALOG NOT AVAILABLE YET) ###
-
 preflight_root() { [ "$(id -u)" -eq 0 ] || { echo "ERROR: run this script as root." >&2; exit 1; }; }
 
 detect_boot_mode() {
@@ -429,7 +428,6 @@ transition_screen() {
 }
 
 ### TUI SCREENS ###
-
 welcome_screen() {
   local mode_label="Legacy BIOS"
   [ "$BOOT_MODE" = "uefi" ] && mode_label="UEFI"
@@ -520,7 +518,6 @@ select_de() {
 }
 
 ### HEAVY LIFTING ###
-
 do_partitioning() {
   wipefs -af "$DISK"
   sgdisk -Z "$DISK"
