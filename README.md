@@ -25,7 +25,6 @@ The installer consists of five simple TUI steps which configure your Void Linux 
 <p align="center">
 	<img src="https://i.postimg.cc/tRkV8StZ/Screenshot-from-2026-08-31-22-18-41.png"/>
 </p>
-<br>
 
 ## Contact and Donations
 * [Email](michaelsebero@disroot.org)
