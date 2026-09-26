@@ -15,6 +15,7 @@ KEYMAP_VAL="us"
 TZ_VAL="UTC"
 EFI_SIZE="1024M"
 BIOS_BOOT_SIZE="1M"
+BOOT_SIZE="1024M"
 SWAP_SIZE="15G"
 REPO="https://repo-default.voidlinux.org/current"
 ARCH="x86_64"
@@ -487,14 +488,20 @@ select_drive() {
   dialog --backtitle "$BACKTITLE" --title "Confirm" --yesno "ALL DATA on $DISK will be permanently erased.\n\nContinue?" 10 60 \
     || die "Installation cancelled."
 
-  BOOT_PART=$(part "$DISK" 1)
-  SWAP_PART=$(part "$DISK" 2)
-  ROOT_PART=$(part "$DISK" 3)
+  if [ "$BOOT_MODE" = "uefi" ]; then
+    BOOT_PART=$(part "$DISK" 1)
+    SWAP_PART=$(part "$DISK" 2)
+    ROOT_PART=$(part "$DISK" 3)
+  else
+    BOOT_PART=$(part "$DISK" 2)
+    SWAP_PART=$(part "$DISK" 3)
+    ROOT_PART=$(part "$DISK" 4)
+  fi
 }
 
 select_filesystem() {
   local boot_note="$EFI_SIZE EFI"
-  [ "$BOOT_MODE" = "bios" ] && boot_note="$BIOS_BOOT_SIZE BIOS boot"
+  [ "$BOOT_MODE" = "bios" ] && boot_note="$BIOS_BOOT_SIZE BIOS boot + $BOOT_SIZE boot"
   ask --backtitle "$BACKTITLE" --title "Partitioning (3/5)" --default-item "f2fs" \
     --menu "Filesystem for the main system ($boot_note + $SWAP_SIZE swap already set aside):" 15 65 4 \
     f2fs "F2FS" ext4 "EXT4" xfs "XFS" btrfs "BTRFS" \
@@ -526,20 +533,29 @@ do_partitioning() {
   # GRUB embeds core.img into (legacy BIOS + GPT).
   if [ "$BOOT_MODE" = "uefi" ]; then
     sgdisk -n 1:0:"+$EFI_SIZE" -t 1:ef00 -c 1:"EFI System" "$DISK"
+    sgdisk -n 2:0:"+$SWAP_SIZE" -t 2:8200 -c 2:"Linux swap"  "$DISK"
+    if [ "$ENCRYPT" = "yes" ]; then
+      sgdisk -n 3:0:0 -t 3:8309 -c 3:"Linux LUKS" "$DISK"
+    else
+      sgdisk -n 3:0:0 -t 3:8300 -c 3:"Linux root" "$DISK"
+    fi
   else
     sgdisk -n 1:0:"+$BIOS_BOOT_SIZE" -t 1:ef02 -c 1:"BIOS boot" "$DISK"
-  fi
-  sgdisk -n 2:0:"+$SWAP_SIZE" -t 2:8200 -c 2:"Linux swap"  "$DISK"
-  if [ "$ENCRYPT" = "yes" ]; then
-    sgdisk -n 3:0:0 -t 3:8309 -c 3:"Linux LUKS" "$DISK"
-  else
-    sgdisk -n 3:0:0 -t 3:8300 -c 3:"Linux root" "$DISK"
+    sgdisk -n 2:0:"+$BOOT_SIZE"      -t 2:ea00 -c 2:"Linux extended boot" "$DISK"
+    sgdisk -n 3:0:"+$SWAP_SIZE"      -t 3:8200 -c 3:"Linux swap"  "$DISK"
+    if [ "$ENCRYPT" = "yes" ]; then
+      sgdisk -n 4:0:0 -t 4:8309 -c 4:"Linux LUKS" "$DISK"
+    else
+      sgdisk -n 4:0:0 -t 4:8300 -c 4:"Linux root" "$DISK"
+    fi
   fi
   partprobe "$DISK" >/dev/null 2>&1 || true
   udevadm settle --timeout=10 2>/dev/null || sleep 2
 
   if [ "$BOOT_MODE" = "uefi" ]; then
     mkfs.vfat -F32 -n EFI "$BOOT_PART"
+  else
+    mkfs.vfat -F32 -n BOOT "$BOOT_PART"
   fi
   mkswap -L swap "$SWAP_PART"
   swapon "$SWAP_PART"
@@ -565,6 +581,9 @@ do_partitioning() {
   if [ "$BOOT_MODE" = "uefi" ]; then
     mkdir -p /mnt/boot/efi
     mount "$BOOT_PART" /mnt/boot/efi
+  else
+    mkdir -p /mnt/boot
+    mount "$BOOT_PART" /mnt/boot
   fi
 }
 
