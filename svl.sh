@@ -30,7 +30,7 @@ HAVE_DIALOG=0
 WORKDIR=""
 MIRROR_PID=""
 BOOT_MODE=""
-DISK="" BOOT_PART="" SWAP_PART="" ROOT_PART=""
+DISK="" BOOT_PART="" SWAP_PART="" ROOT_PART="" SWAP_PARTUUID=""
 FS_CHOICE="" ENCRYPT="no" LUKS_UUID=""
 DE_CHOICE="" GPU_VENDOR="unknown"
 USERNAME="" USERPASS="" ROOTPASS="" LUKS_PASS=""
@@ -39,9 +39,9 @@ part() { case "$1" in *[0-9]) printf '%sp%s' "$1" "$2" ;; *) printf '%s%s' "$1" 
 
 cleanup_and_exit() {
   local code="${1:-1}"
+  umount -R /mnt >/dev/null 2>&1 || true
   swapoff "$SWAP_PART" >/dev/null 2>&1 || true
   if [ "$ENCRYPT" = "yes" ]; then cryptsetup close void_root >/dev/null 2>&1 || true; fi
-  umount -R /mnt >/dev/null 2>&1 || true
   exit "$code"
 }
 
@@ -165,7 +165,7 @@ run_part() {
   local msg="$1"; shift
   CURRENT_PART=$((CURRENT_PART + 1))
 
-  ( "$@" ) >>"$LOG" 2>&1 </dev/null &
+  ( set -e; "$@" ) >>"$LOG" 2>&1 </dev/null &
   local pid=$! start_ts=$SECONDS elapsed=0 line rc
 
   [ "$TUI_LIVE" = "1" ] && tput civis 2>/dev/null
@@ -533,7 +533,7 @@ do_partitioning() {
   # GRUB embeds core.img into (legacy BIOS + GPT).
   if [ "$BOOT_MODE" = "uefi" ]; then
     sgdisk -n 1:0:"+$EFI_SIZE" -t 1:ef00 -c 1:"EFI System" "$DISK"
-    sgdisk -n 2:0:"+$SWAP_SIZE" -t 2:8200 -c 2:"Linux swap"  "$DISK"
+    sgdisk -n 2:0:"+$SWAP_SIZE" -t 2:8200 -c 2:"Linux swap" -u 2:"$SWAP_PARTUUID" "$DISK"
     if [ "$ENCRYPT" = "yes" ]; then
       sgdisk -n 3:0:0 -t 3:8309 -c 3:"Linux LUKS" "$DISK"
     else
@@ -542,7 +542,7 @@ do_partitioning() {
   else
     sgdisk -n 1:0:"+$BIOS_BOOT_SIZE" -t 1:ef02 -c 1:"BIOS boot" "$DISK"
     sgdisk -n 2:0:"+$BOOT_SIZE"      -t 2:ea00 -c 2:"Linux extended boot" "$DISK"
-    sgdisk -n 3:0:"+$SWAP_SIZE"      -t 3:8200 -c 3:"Linux swap"  "$DISK"
+    sgdisk -n 3:0:"+$SWAP_SIZE"      -t 3:8200 -c 3:"Linux swap" -u 3:"$SWAP_PARTUUID" "$DISK"
     if [ "$ENCRYPT" = "yes" ]; then
       sgdisk -n 4:0:0 -t 4:8309 -c 4:"Linux LUKS" "$DISK"
     else
@@ -557,8 +557,14 @@ do_partitioning() {
   else
     mkfs.vfat -F32 -n BOOT "$BOOT_PART"
   fi
-  mkswap -L swap "$SWAP_PART"
-  swapon "$SWAP_PART"
+  # Encrypted installs get a random-key swap at every boot (crypttab), so nothing
+  # is ever paged to the plain partition, not even during the install.
+  if [ "$ENCRYPT" = "yes" ]; then
+    wipefs -a "$SWAP_PART"
+  else
+    mkswap -L swap "$SWAP_PART"
+    swapon "$SWAP_PART"
+  fi
 
   local target="$ROOT_PART"
   if [ "$ENCRYPT" = "yes" ]; then
@@ -625,41 +631,33 @@ do_bootstrap() {
 }
 
 write_chroot_script() {
-  # Every value double-quoted: install.conf is sourced later, and LOCALE_LINE
-  # has a space ("en_US.UTF-8 UTF-8") that would otherwise break `source` and
-  # leave it unset, which kills the chroot script under `set -u`.
-  cat > /mnt/root/install.conf <<EOF
-HOSTNAME_VAL="$HOSTNAME_VAL"
-LOCALE_LINE="$LOCALE_LINE"
-LANG_VAL="$LANG_VAL"
-KEYMAP_VAL="$KEYMAP_VAL"
-TZ_VAL="$TZ_VAL"
-USER_GROUPS="$USER_GROUPS"
-FS_CHOICE="$FS_CHOICE"
-ENCRYPT="$ENCRYPT"
-DE_CHOICE="$DE_CHOICE"
-BOOT_MODE="$BOOT_MODE"
-DISK="$DISK"
-ROOT_PART="$ROOT_PART"
-LUKS_UUID="$LUKS_UUID"
-EOF
-
-  mkdir -p /mnt/root/secrets
-  chmod 700 /mnt/root/secrets
-  printf '%s' "$USERNAME" > /mnt/root/secrets/username
-  printf '%s' "$USERPASS" > /mnt/root/secrets/userpass
-  printf '%s' "$ROOTPASS" > /mnt/root/secrets/rootpass
-  [ "$ENCRYPT" = "yes" ] && printf '%s' "$LUKS_PASS" > /mnt/root/secrets/luks_pass
-  chmod 600 /mnt/root/secrets/*
+  # %q keeps each value a single shell word when install.conf is sourced in the chroot.
+  {
+    printf 'HOSTNAME_VAL=%q\n' "$HOSTNAME_VAL"
+    printf 'LOCALE_LINE=%q\n' "$LOCALE_LINE"
+    printf 'LANG_VAL=%q\n' "$LANG_VAL"
+    printf 'KEYMAP_VAL=%q\n' "$KEYMAP_VAL"
+    printf 'TZ_VAL=%q\n' "$TZ_VAL"
+    printf 'USER_GROUPS=%q\n' "$USER_GROUPS"
+    printf 'FS_CHOICE=%q\n' "$FS_CHOICE"
+    printf 'ENCRYPT=%q\n' "$ENCRYPT"
+    printf 'DE_CHOICE=%q\n' "$DE_CHOICE"
+    printf 'BOOT_MODE=%q\n' "$BOOT_MODE"
+    printf 'DISK=%q\n' "$DISK"
+    printf 'LUKS_UUID=%q\n' "$LUKS_UUID"
+    printf 'SWAP_PARTUUID=%q\n' "$SWAP_PARTUUID"
+    printf 'USERNAME=%q\n' "$USERNAME"
+    printf 'MIRROR_BASE=%q\n' "${REPO%/current}"
+  } > /mnt/root/install.conf
 
   cat > /mnt/root/chroot-setup.sh <<'CHROOT_SCRIPT'
 #!/bin/bash
-set -uo pipefail
+set -euo pipefail
 # shellcheck source=/dev/null
 source /root/install.conf
-USERNAME=$(cat /root/secrets/username)
-USERPASS=$(cat /root/secrets/userpass)
-ROOTPASS=$(cat /root/secrets/rootpass)
+IFS= read -r -d '' USERPASS
+IFS= read -r -d '' ROOTPASS
+exec </dev/null
 
 chown root:root /
 chmod 755 /
@@ -681,25 +679,26 @@ echo "$LOCALE_LINE" >> /etc/default/libc-locales
 echo "LANG=$LANG_VAL" > /etc/locale.conf
 xbps-reconfigure -f glibc-locales
 
-sed -i 's/^password.*pam_permit\.so/password\trequired\tpam_unix.so sha512 shadow nullok/' /etc/pam.d/chpasswd
-
-printf 'root:%s\n' "$ROOTPASS" | chpasswd
+# -c skips PAM. Void's /etc/pam.d/chpasswd ends in pam_permit, so a PAM chpasswd changes nothing.
+printf 'root:%s\n' "$ROOTPASS" | chpasswd -c SHA512
 useradd -m -G "$USER_GROUPS" -s /bin/bash "$USERNAME"
-printf '%s:%s\n' "$USERNAME" "$USERPASS" | chpasswd
+printf '%s:%s\n' "$USERNAME" "$USERPASS" | chpasswd -c SHA512
 
 mkdir -p /etc/sudoers.d
 echo "%wheel ALL=(ALL:ALL) ALL" > /etc/sudoers.d/wheel
 chmod 0440 /etc/sudoers.d/wheel
 
+# No elogind service: D-Bus starts elogind on demand (sddm's run script does it before
+# sddm), and a runit copy on top races that start ("elogind is already running as PID").
 mkdir -p /etc/runit/runsvdir/default
 ln -sf /etc/sv/dbus /etc/runit/runsvdir/default/
-ln -sf /etc/sv/elogind /etc/runit/runsvdir/default/
 ln -sf /etc/sv/NetworkManager /etc/runit/runsvdir/default/
 
-mkdir -p /etc/xdg/autostart
-for f in pipewire pipewire-pulse wireplumber; do
-  ln -sf "/usr/share/applications/$f.desktop" /etc/xdg/autostart/
-done
+# pipewire launches wireplumber and pipewire-pulse itself, in order; only pipewire is autostarted.
+mkdir -p /etc/pipewire/pipewire.conf.d /etc/xdg/autostart
+ln -sf /usr/share/examples/wireplumber/10-wireplumber.conf /etc/pipewire/pipewire.conf.d/
+ln -sf /usr/share/examples/pipewire/20-pipewire-pulse.conf /etc/pipewire/pipewire.conf.d/
+ln -sf /usr/share/applications/pipewire.desktop /etc/xdg/autostart/
 
 case "$DE_CHOICE" in
   kde)      ln -sf /etc/sv/sddm   /etc/runit/runsvdir/default/ ;;
@@ -711,26 +710,32 @@ esac
 # (forks aren't accepted there) - fetched from a third-party repo instead,
 # kept as its own step so a failure here can't take down the whole install.
 mkdir -p /etc/xbps.d
+if [ "$MIRROR_BASE" != "https://repo-default.voidlinux.org" ]; then
+  cp /usr/share/xbps.d/*-repository-*.conf /etc/xbps.d/
+  sed -i "s|https://repo-default.voidlinux.org|$MIRROR_BASE|g" /etc/xbps.d/*-repository-*.conf
+fi
 echo 'repository=https://github.com/index-0/librewolf-void/releases/latest/download/' > /etc/xbps.d/20-librewolf.conf
-# -y doesn't cover the separate "trust this new signing key" prompt, which
-# run_part's closed stdin would EOF on and fail - pipe yes in to answer both.
-yes | xbps-install -Suy librewolf \
+# -y doesn't cover the separate "trust this new signing key" prompt; yes answers it.
+# Process substitution, not a pipe: under pipefail `yes |` returns 141 even on success.
+xbps-install -Suy librewolf < <(yes) \
   || echo "WARNING: librewolf install failed - run 'xbps-install -Su librewolf' after rebooting to try again." >&2
 
 if [ "$ENCRYPT" = "yes" ]; then
-  LUKS_PASS=$(cat /root/secrets/luks_pass)
-  grep -q '^GRUB_ENABLE_CRYPTODISK=y' /etc/default/grub 2>/dev/null \
-    || echo 'GRUB_ENABLE_CRYPTODISK=y' >> /etc/default/grub
   sed -i "s#^GRUB_CMDLINE_LINUX_DEFAULT=\"#GRUB_CMDLINE_LINUX_DEFAULT=\"rd.luks.uuid=$LUKS_UUID #" /etc/default/grub
-
-  # Keyfile embedded into the initramfs so the LUKS password is only typed once, at GRUB.
-  dd bs=1 count=64 if=/dev/urandom of=/boot/volume.key 2>/dev/null
-  printf '%s' "$LUKS_PASS" | cryptsetup luksAddKey "$ROOT_PART" /boot/volume.key --key-file=-
-  chmod 000 /boot/volume.key
-  chmod -R g-rwx,o-rwx /boot
-  echo "void_root  $ROOT_PART  /boot/volume.key  luks" >> /etc/crypttab
   mkdir -p /etc/dracut.conf.d
-  echo 'install_items+=" /boot/volume.key /etc/crypttab "' > /etc/dracut.conf.d/10-crypt.conf
+  echo 'add_dracutmodules+=" crypt "' > /etc/dracut.conf.d/10-crypt.conf
+  # UEFI: /boot is inside LUKS, GRUB asks for the password and the keyfile (added on the
+  # host) spares a second prompt. BIOS: /boot is plain vfat, so no keyfile; the initramfs asks once.
+  if [ "$BOOT_MODE" = "uefi" ]; then
+    grep -q '^GRUB_ENABLE_CRYPTODISK=y' /etc/default/grub 2>/dev/null \
+      || echo 'GRUB_ENABLE_CRYPTODISK=y' >> /etc/default/grub
+    chmod 700 /boot
+    printf 'void_root\tUUID=%s\t/boot/volume.key\tluks\n' "$LUKS_UUID" >> /etc/crypttab
+    echo 'install_items+=" /boot/volume.key /etc/crypttab "' >> /etc/dracut.conf.d/10-crypt.conf
+  fi
+  # A path, not PARTUUID=: crypt.awk keeps the previous line's device when a blkid lookup
+  # comes back empty, and this line runs mkswap on whatever it opens.
+  printf 'void_swap\t/dev/disk/by-partuuid/%s\t/dev/urandom\tswap,cipher=aes-xts-plain64,size=512\n' "$SWAP_PARTUUID" >> /etc/crypttab
 fi
 
 if [ "$BOOT_MODE" = "uefi" ]; then
@@ -743,7 +748,7 @@ fi
 
 xbps-reconfigure -fa
 
-rm -rf /root/secrets /root/install.conf /root/chroot-setup.sh
+rm -f /root/install.conf /root/chroot-setup.sh
 CHROOT_SCRIPT
   chmod 700 /mnt/root/chroot-setup.sh
 }
@@ -754,18 +759,27 @@ do_configure() {
   # (fsck) into an emergency shell; stripping it is a no-op on other filesystems.
   sed -i -e 's/flush_merge,//' -e 's/,flush_merge//' -e 's/\bflush_merge\b//' /mnt/etc/fstab
   # Safeguard for future steps that might need DNS; not required today, so failure here is non-fatal.
+  if [ "$ENCRYPT" = "yes" ]; then
+    printf '/dev/mapper/void_swap\tnone\tswap\tdefaults\t0 0\n' >> /mnt/etc/fstab
+    if [ "$BOOT_MODE" = "uefi" ]; then
+      ( umask 077; dd bs=1 count=64 if=/dev/urandom of=/mnt/boot/volume.key 2>/dev/null )
+      printf '%s' "$LUKS_PASS" | cryptsetup luksAddKey "$ROOT_PART" /mnt/boot/volume.key --key-file=-
+      chmod 000 /mnt/boot/volume.key
+    fi
+  fi
   cp /etc/resolv.conf /mnt/etc/resolv.conf 2>/dev/null || true
   write_chroot_script
-  xchroot /mnt /bin/bash /root/chroot-setup.sh
+  # Passwords reach the chroot over stdin, so they are never written to the target disk.
+  printf '%s\0%s\0' "$USERPASS" "$ROOTPASS" | xchroot /mnt /bin/bash /root/chroot-setup.sh
 }
 
 finish_screen() {
   # Copies the log onto the new system before reboot; the live environment (and $LOG) disappears with it.
   mkdir -p /mnt/var/log 2>/dev/null
   cp "$LOG" /mnt/var/log/void-install.log 2>/dev/null || true
+  umount -R /mnt >/dev/null 2>&1 || true
   swapoff "$SWAP_PART" >/dev/null 2>&1 || true
   if [ "$ENCRYPT" = "yes" ]; then cryptsetup close void_root >/dev/null 2>&1 || true; fi
-  umount -R /mnt >/dev/null 2>&1 || true
   for n in 3 2 1; do
     dialog --backtitle "$BACKTITLE" --title "Complete (5/5)" --infobox \
 "Installation complete.\n\nRemove installation media now.\nRebooting in $n..." 9 55
@@ -803,11 +817,15 @@ main() {
 
   transition_screen "Starting installation..."
 
+  SWAP_PARTUUID=$(</proc/sys/kernel/random/uuid)
   run_part "Partitioning $DISK..." do_partitioning
   [ -f "$WORKDIR/luks_uuid" ] && LUKS_UUID=$(<"$WORKDIR/luks_uuid")
 
   wait "$MIRROR_PID" 2>/dev/null || true
-  [ -s "$WORKDIR/mirror" ] && REPO="$(<"$WORKDIR/mirror")/current"
+  if [ -s "$WORKDIR/mirror" ]; then
+    local mirror; mirror=$(<"$WORKDIR/mirror")
+    [[ "$mirror" =~ ^https?://[A-Za-z0-9._~:/-]+$ ]] && REPO="$mirror/current"
+  fi
 
   run_part "Installing base system and packages..." do_bootstrap
   run_part "Configuring the new system..." do_configure
